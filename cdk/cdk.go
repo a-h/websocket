@@ -6,6 +6,8 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambdaeventsources"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
+	awscdkapigateway "github.com/aws/aws-cdk-go/awscdkapigatewayv2alpha/v2"
+	awscdkapigatewayintegrations "github.com/aws/aws-cdk-go/awscdkapigatewayv2integrationsalpha/v2"
 	awslambdago "github.com/aws/aws-cdk-go/awscdklambdagoalpha/v2"
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
@@ -73,7 +75,7 @@ func NewWebSocketStack(scope constructs.Construct, id string, props *WebSocketSt
 	})
 	subscriptionsTable.GrantWriteData(onDisconnect)
 
-	awslambdago.NewGoFunction(stack, jsii.Ptr("OnDefault"), &awslambdago.GoFunctionProps{
+	onDefault := awslambdago.NewGoFunction(stack, jsii.Ptr("OnDefault"), &awslambdago.GoFunctionProps{
 		Runtime:      awslambda.Runtime_PROVIDED_AL2(),
 		Architecture: awslambda.Architecture_ARM_64(),
 		MemorySize:   jsii.Ptr(1024.0),
@@ -83,6 +85,37 @@ func NewWebSocketStack(scope constructs.Construct, id string, props *WebSocketSt
 			"CONNECTIONS_TABLE_NAME": subscriptionsTable.TableName(),
 		},
 	})
+
+	webSocketAPI := awscdkapigateway.NewWebSocketApi(stack, jsii.Ptr("WebsocketApi"), &awscdkapigateway.WebSocketApiProps{
+		ConnectRouteOptions: &awscdkapigateway.WebSocketRouteOptions{
+			Integration:    awscdkapigatewayintegrations.NewWebSocketLambdaIntegration(jsii.Ptr("ConnectRoute"), onConnect),
+			Authorizer:     awscdkapigateway.NewWebSocketNoneAuthorizer(),
+			ReturnResponse: jsii.Ptr(true),
+		},
+		DefaultRouteOptions: &awscdkapigateway.WebSocketRouteOptions{
+			Integration:    awscdkapigatewayintegrations.NewWebSocketLambdaIntegration(jsii.Ptr("DefaultRoute"), onDefault),
+			ReturnResponse: jsii.Ptr(true),
+		},
+		DisconnectRouteOptions: &awscdkapigateway.WebSocketRouteOptions{
+			Integration:    awscdkapigatewayintegrations.NewWebSocketLambdaIntegration(jsii.Ptr("DisconnectRoute"), onDisconnect),
+			ReturnResponse: jsii.Ptr(true),
+		},
+	})
+	awscdkapigateway.NewWebSocketStage(stack, jsii.Ptr("WebsocketApiStage"), &awscdkapigateway.WebSocketStageProps{
+		AutoDeploy:   jsii.Ptr(true),
+		StageName:    jsii.Ptr("wss"),
+		WebSocketApi: webSocketAPI,
+	})
+
+	// Add /wss to the URL to access it.
+	awscdk.NewCfnOutput(stack, jsii.String("url"), &awscdk.CfnOutputProps{
+		ExportName: jsii.String("WebSocketAPI"),
+		Value:      webSocketAPI.ApiEndpoint(),
+	})
+
+	//greetRoot := restAPI.Root().AddResource(jsii.String("greet"), &awsapigateway.ResourceOptions{})
+	//greetPostIntegration := awsapigateway.NewLambdaIntegration(greetPost, &awsapigateway.LambdaIntegrationOptions{})
+	//greetRoot.AddMethod(jsii.String("POST"), greetPostIntegration, &awsapigateway.MethodOptions{})
 
 	// A queue you can use to send information to connected clients.
 	sendQueue := awssqs.NewQueue(stack, jsii.Ptr("SendQueue"), &awssqs.QueueProps{
@@ -113,9 +146,6 @@ func NewWebSocketStack(scope constructs.Construct, id string, props *WebSocketSt
 		MaxConcurrency: jsii.Ptr(128.0),
 	}))
 	subscriptionsTable.GrantReadData(sender)
-
-	//TODO: Add a default handler to be able to receive data from the frontend.
-	//TODO: Add a handler that can send information from EventBridge to the frontend.
 
 	return stack
 }

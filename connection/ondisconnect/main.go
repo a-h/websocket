@@ -25,7 +25,7 @@ type Handler struct {
 	Log *slog.Logger
 }
 
-func (h Handler) Handle(ctx context.Context, req events.APIGatewayWebsocketProxyRequest) (resp events.APIGatewayProxyResponse) {
+func (h Handler) Handle(ctx context.Context, req events.APIGatewayWebsocketProxyRequest) (resp events.APIGatewayProxyResponse, err error) {
 	h.Log.Info("Received disconnect request", slog.String("connectionId", req.RequestContext.ConnectionID))
 	resp.StatusCode = 200
 	resp.Body = `{ "ok": true }`
