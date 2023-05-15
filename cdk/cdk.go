@@ -24,14 +24,13 @@ func NewWebSocketStack(scope constructs.Construct, id string, props *WebSocketSt
 	}
 	stack := awscdk.NewStack(scope, &id, &sprops)
 
-	// Store User ID to Connection Lookup.
-	// Table...
-	// pk          | sk           | connectionId     |
-	// ------------|--------------|------------------|
-	// user/123    | connectionId | <connection_id>  | # Each user's connections.
-	// topic/ab12  | user/123     | NULL             | # Subscribers to an entity.
-	// topic/ab12  | user/456     | NULL             |
-	// topic/cd34  | user/123     | NULL             |
+	// Topic to Connection ID lookup.
+	//
+	// pk          | sk                      | topic | connectionId |
+	// ------------|-------------------------|-------|--------------|
+	// topic/ab12  | 20230201140012/d234234d | ab12  | d234234d     |
+	//             | 20230201140012/c23as34d | ab12  | c23as34d     |
+	// topic/cd34  | 20230201140012/d234234d | cd34  | d234234d     |
 
 	subscriptionsTable := awsdynamodb.NewTable(stack, jsii.Ptr("Subscriptions"), &awsdynamodb.TableProps{
 		PartitionKey: &awsdynamodb.Attribute{
@@ -101,21 +100,35 @@ func NewWebSocketStack(scope constructs.Construct, id string, props *WebSocketSt
 			ReturnResponse: jsii.Ptr(true),
 		},
 	})
+	var wssStageName = "wss"
 	awscdkapigateway.NewWebSocketStage(stack, jsii.Ptr("WebsocketApiStage"), &awscdkapigateway.WebSocketStageProps{
 		AutoDeploy:   jsii.Ptr(true),
-		StageName:    jsii.Ptr("wss"),
+		StageName:    &wssStageName,
 		WebSocketApi: webSocketAPI,
 	})
 
 	// Add /wss to the URL to access it.
-	awscdk.NewCfnOutput(stack, jsii.String("url"), &awscdk.CfnOutputProps{
-		ExportName: jsii.String("WebSocketAPI"),
-		Value:      webSocketAPI.ApiEndpoint(),
+	domain := awscdk.Fn_Split(jsii.Ptr("wss://"), webSocketAPI.ApiEndpoint(), jsii.Ptr(2.0))
+	wssEndpoint := awscdk.Fn_Join(jsii.Ptr(""), &[]*string{
+		jsii.Ptr("wss://"),
+		(*domain)[1],
+		jsii.Ptr("/"),
+		&wssStageName,
 	})
-
-	//greetRoot := restAPI.Root().AddResource(jsii.String("greet"), &awsapigateway.ResourceOptions{})
-	//greetPostIntegration := awsapigateway.NewLambdaIntegration(greetPost, &awsapigateway.LambdaIntegrationOptions{})
-	//greetRoot.AddMethod(jsii.String("POST"), greetPostIntegration, &awsapigateway.MethodOptions{})
+	wssManagementEndpoint := awscdk.Fn_Join(jsii.Ptr(""), &[]*string{
+		jsii.Ptr("https://"),
+		(*domain)[1],
+		jsii.Ptr("/"),
+		&wssStageName,
+	})
+	awscdk.NewCfnOutput(stack, jsii.String("WebSocketAPIOutput"), &awscdk.CfnOutputProps{
+		ExportName: jsii.String("WebSocketAPI"),
+		Value:      wssEndpoint,
+	})
+	awscdk.NewCfnOutput(stack, jsii.String("WebSocketManagementAPIOutput"), &awscdk.CfnOutputProps{
+		ExportName: jsii.String("WebSocketManagementAPI"),
+		Value:      wssManagementEndpoint,
+	})
 
 	// A queue you can use to send information to connected clients.
 	sendQueue := awssqs.NewQueue(stack, jsii.Ptr("SendQueue"), &awssqs.QueueProps{
@@ -131,16 +144,23 @@ func NewWebSocketStack(scope constructs.Construct, id string, props *WebSocketSt
 		EnforceSSL:    jsii.Ptr(true),
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
+	awscdk.NewCfnOutput(stack, jsii.String("QueueOutput"), &awscdk.CfnOutputProps{
+		ExportName: jsii.String("SendQueueURL"),
+		Value:      sendQueue.QueueUrl(),
+	})
 	sender := awslambdago.NewGoFunction(stack, jsii.Ptr("Sender"), &awslambdago.GoFunctionProps{
 		Runtime:      awslambda.Runtime_PROVIDED_AL2(),
 		Architecture: awslambda.Architecture_ARM_64(),
 		MemorySize:   jsii.Ptr(1024.0),
+		Timeout:      awscdk.Duration_Minutes(jsii.Ptr(15.0)),
 		Entry:        jsii.Ptr("../sender"),
 		Bundling:     bundlingOptions,
 		Environment: &map[string]*string{
-			"CONNECTIONS_TABLE_NAME": subscriptionsTable.TableName(),
+			"WSS_MANAGEMENT_ENDPOINT": wssManagementEndpoint,
+			"CONNECTIONS_TABLE_NAME":  subscriptionsTable.TableName(),
 		},
 	})
+	webSocketAPI.GrantManageConnections(sender)
 	sender.AddEventSource(awslambdaeventsources.NewSqsEventSource(sendQueue, &awslambdaeventsources.SqsEventSourceProps{
 		BatchSize:      jsii.Ptr(1.0),
 		MaxConcurrency: jsii.Ptr(128.0),
